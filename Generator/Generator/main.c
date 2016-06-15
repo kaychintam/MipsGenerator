@@ -121,6 +121,7 @@ AddrKind getKind(char* name) {
 
 //根据变量名查到到它的类型
 type getType(char* name, VariableMap* map) {
+    if (name[0]=='$') return INTEGER;
     for (int i=0; i<map->num; i++)
         if (strcmp(name, map->var[i].name)==0)
             return map->var[i].type;
@@ -351,17 +352,20 @@ void genREAD(Quad* quad, VariableMap* map) {
     if (t == INTEGER) {
         fprintf(out, "\tli $v0, 5\n");
         fprintf(out, "\tsyscall\n");
-        fprintf(out, "\tsw $v0, %s\n", quad->addr1.contents.name);
+        fprintf(out, "\tlw $t0, %s\n", quad->addr1.contents.name);
+        fprintf(out, "\tsw $v0, 0($t0)\n");
     }
     if (t == FLOAT) {
         fprintf(out, "\tli $v0, 6\n");
         fprintf(out, "\tsyscall\n");
-        fprintf(out, "\ts.s $f0, %s\n", quad->addr1.contents.name);
+        fprintf(out, "\tlw $t0, %s\n", quad->addr1.contents.name);
+        fprintf(out, "\ts.s $f0, 0($t0)\n");
     }
     if (t == DOUBLE) {
         fprintf(out, "\tli $v0, 7\n");
         fprintf(out, "\tsyscall\n");
-        fprintf(out, "\ts.d $f0, %s\n", quad->addr1.contents.name);
+        fprintf(out, "\tlw $t0, %s\n", quad->addr1.contents.name);
+        fprintf(out, "\ts.d $f0, 0($t0)\n");
     }
 //    恢复现场
 //    fprintf(out, "\tlw $ra, 0($sp)\n");
@@ -409,8 +413,13 @@ void genLABEL(Quad* quad) {
 //生成if_false跳转的语句
 void genFJUMP(Quad* quad) {
     fprintf(out, "\t# if_false jump\n");
-    fprintf(out, "\tlw $t1, %s\n", quad->addr1.contents.name);
-    fprintf(out, "\tbeq $t1, $0, %s\n", quad->addr2.contents.name);
+    if (strcmp(quad->addr1.contents.name, "$t7")==0) {
+        fprintf(out, "\tadd $t1, $t7, $0\n");
+    } else {
+        fprintf(out, "\tlw $t1, %s\n", quad->addr1.contents.name);
+        fprintf(out, "\tlw $t1, 0($t1)\n");
+    }
+    fprintf(out, "\tbne $t1, $0, %s\n", quad->addr2.contents.name);
 }
 
 //直接goto
@@ -486,11 +495,12 @@ void genCompare(Quad* quad, VariableMap* map) {
                 fprintf(out, "\tcvt.s.w $f2, $f2\n");
             }
         }
-        if (quad->op == sm) fprintf(out, "\tc.lt.s 1, $f0, $f2\n");
-        if (quad->op == gt) fprintf(out, "\tc.lt.s 1, $f2, $f0\n");
-        if (quad->op == eq) fprintf(out, "\tc.eq.s 1, $f0, $f2\n");
+        if (quad->op == sm) fprintf(out, "\tc.lt.s 0, $f0, $f2\n");
+        if (quad->op == gt) fprintf(out, "\tc.lt.s 0, $f2, $f0\n");
+        if (quad->op == eq) fprintf(out, "\tc.eq.s 0, $f0, $f2\n");
         fprintf(out, "\tli $t5, 1\n");
-        fprintf(out, "\tmovf $t3, $t5, 1\n");
+        fprintf(out, "\tli, $t3, 0\n");
+        fprintf(out, "\tmovt $t3, $t5, 0\n");
     }
     if (t == DOUBLE) {
         if (quad->addr1.kind == IntConst) fprintf(out, "\tli.d $f0, %d.0\n", quad->addr1.contents.intVal);
@@ -527,11 +537,16 @@ void genCompare(Quad* quad, VariableMap* map) {
             }
             if (t2 == DOUBLE) fprintf(out, "\tl.d $f2, 0($t3)\n");
         }
-        if (quad->op == sm) fprintf(out, "\tc.lt.d 1, $f0, $f2\n");
-        if (quad->op == gt) fprintf(out, "\tc.lt.d 1, $f2, $f0\n");
-        if (quad->op == eq) fprintf(out, "\tc.eq.d 1, $f0, $f2\n");
+        if (quad->op == sm) fprintf(out, "\tc.lt.d 0, $f0, $f2\n");
+        if (quad->op == gt) fprintf(out, "\tc.lt.d 0, $f2, $f0\n");
+        if (quad->op == eq) fprintf(out, "\tc.eq.d 0, $f0, $f2\n");
         fprintf(out, "\tli $t5, 1\n");
-        fprintf(out, "\tmovf $t3, $t5, 1\n");
+        fprintf(out, "\tli, $t3, 0\n");
+        fprintf(out, "\tmovt $t3, $t5, 0\n");
+    }
+    if (strcmp(quad->addr3.contents.name, "$t7")==0) {
+        fprintf(out, "\tadd $t7, $t3, $0\n");
+        return;
     }
     t = getType(quad->addr3.contents.name+1, map);
     fprintf(out, "\tlw $t2, %s\n", quad->addr3.contents.name+1);
@@ -667,6 +682,7 @@ int main() {
             if (quad.addr1.kind == IntConst) quad.addr1.contents.intVal = atoi(elements[1]);
             if (quad.addr1.kind == FloatConst) quad.addr1.contents.doubleVal = atof(elements[1]);
             if (quad.addr1.kind != IntConst && quad.addr1.kind != FloatConst) strcpy(quad.addr1.contents.name, elements[1]);
+
             if (quad.addr2.kind == IntConst) quad.addr2.contents.intVal = atoi(elements[3]);
             if (quad.addr2.kind == FloatConst) quad.addr2.contents.doubleVal = atof(elements[3]);
             if (quad.addr2.kind != IntConst && quad.addr2.kind != FloatConst) strcpy(quad.addr2.contents.name, elements[3]);
