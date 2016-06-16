@@ -27,7 +27,7 @@ typedef struct {
 
 //定义三地址码的操作类型
 typedef enum {
-    gt, sm, eq, if_f, lab, add, sub, dvd, mul, rd, pri, priln, asn, jump, dec
+    gt, sm, eq, if_f, lab, add, sub, dvd, mul, rd, pri, priln, asn, jump, dec, call
     //add sub mul dvd是加减乘除
     //gt sm eq是比较
     //pri priln rd是输入输出
@@ -199,6 +199,7 @@ void genASN(Quad* quad, VariableMap* map) {
             if (quad->addr1.kind == IntConst) {
                 fprintf(out, "\tli $t0, %d\n", quad->addr1.contents.intVal);
                 fprintf(out, "\tmtc1, $t0, $f0\n");
+                fprintf(out, "\tcvt.s.w $f0, $f0\n");
                 fprintf(out, "\tcvt.d.s $f0, $f0\n");
             }
             if (quad->addr1.kind == FloatConst) {
@@ -425,7 +426,7 @@ void genFJUMP(Quad* quad) {
 //直接goto
 void genJUMP(Quad* quad) {
     fprintf(out, "\t# direct jump\n");
-    fprintf(out, "\tj %s", quad->addr1.contents.name);
+    fprintf(out, "\tj %s\n", quad->addr1.contents.name);
 }
 
 //生成比较的语句,结果只能为INTEGER？
@@ -605,6 +606,13 @@ int main() {
         if (strcmp(elements[0], "malloc")==0) {
             addArray(&map, elements[1], atoi(elements[2]));
         }
+        if (strcmp(elements[0], "call")==0) {
+            strcpy(quad.addr1.contents.name, elements[1]);
+            quad.addr1.kind = String;
+            quad.op = call;
+            text.quad[text.num] = quad;
+            text.num++;
+        }
         //如果三地址码第一个元素是read
         if (strcmp(elements[0], "read")==0) {
             strcpy(quad.addr1.contents.name, elements[1]);
@@ -666,6 +674,10 @@ int main() {
             strcpy(quad.addr1.contents.name, elements[1]);
             text.quad[text.num] = quad;
             text.num++;
+        }
+        //如果是函数名（那最好有个main)
+        if (strcmp(elements[0], "entry")==0) {
+            
         }
         //判断 + 跳转语句 if a == b then goto label 关键是拆成两句话
         if (strcmp(elements[0], "if")==0) {
@@ -752,7 +764,7 @@ int main() {
         if (text.quad[i].op == lab) genLABEL(text.quad+i);
         if (text.quad[i].op == if_f) genFJUMP(text.quad+i);
         if (text.quad[i].op == dec) changeType(text.quad+i, &map);
-      //  if (text.quad[i].op == jump) gen
+        if (text.quad[i].op == jump) genJUMP(text.quad+i);
     }
     //退出主程序
     fprintf(out, "\tjr $ra\n");
