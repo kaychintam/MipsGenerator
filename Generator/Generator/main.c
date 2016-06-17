@@ -17,6 +17,7 @@ typedef struct {
         char doubleval[200];
     };
     type type; //指向的类型
+    bool isVar;
 } Variable;
 
 //变量表
@@ -27,7 +28,7 @@ typedef struct {
 
 //定义三地址码的操作类型
 typedef enum {
-    gt, sm, eq, if_f, lab, add, sub, dvd, mul, rd, pri, priln, asn, jump, dec, call
+    gt, sm, eq, ne, if_f, lab, add, sub, dvd, mul, rd, pri, priln, asn, jump, dec, call, var, sp, func, ret
     //add sub mul dvd是加减乘除
     //gt sm eq是比较
     //pri priln rd是输入输出
@@ -72,6 +73,7 @@ typedef struct {
 
 FILE* fp;
 FILE* out;
+int stackoffset = 0;
 
 //从一行三地址码中提取出元素,成功则为1，失败则为0
 //src是源地址码 dst是提取出的元素 head是从src的某个位置开始扫描
@@ -92,6 +94,7 @@ void addVariable(VariableMap* map, char* name, type vartype, char* initval) {
     strcpy(map->var[map->num].name, name);
     strcpy(map->var[map->num].initval, initval);
     map->var[map->num].type = vartype;
+    map->var[map->num].isVar = FALSE;
     map->num++;
 }
 
@@ -137,22 +140,129 @@ void changeType(Quad* quad, VariableMap* map) {
     for (int i=0; i<map->num; i++)
         if (strcmp(map->var[i].name, quad->addr2.contents.name) == 0) {
             map->var[i].type = t;
+            map->var[i].isVar = FALSE;
             return;
         }
+}
+
+void changeVar(Quad* quad, VariableMap* map) {
+    type t = UNDEFINED;
+    if (strcmp(quad->addr1.contents.name, "int")==0) t = INTEGER;
+    if (strcmp(quad->addr1.contents.name, "float")==0) t = FLOAT;
+    if (strcmp(quad->addr1.contents.name, "double")==0) t = DOUBLE;
+    for (int i=0; i<map->num; i++)
+        if (strcmp(map->var[i].name, quad->addr2.contents.name) == 0) {
+            map->var[i].type = t;
+            map->var[i].isVar = TRUE;
+            return;
+        }
+}
+
+void addStar(char* name) {
+    char next = ' ';
+    char last = '*';
+    while (next != '\0') {
+        next = *name;
+        *name = last;
+        last = next;
+        name++;
+    }
+    *name = '\0';
+}
+
+void removeStar(char* name) {
+    char next = *(name+1);
+    while (*name != '\0') {
+        next = *(name+1);
+        *name = next;
+        name++;
+    }
+    *name = '\0';
+}
+
+void genFUNC(Quad* quad) {
+    fprintf(out, "\n%s:\n", quad->addr1.contents.name);
+    if (strcmp(quad->addr1.contents.name, "main")==0) {
+        fprintf(out, "\tsw $sp, bp\n");
+        return;
+    }
+    fprintf(out, "\t# use stack\n");
+    //push bp
+    fprintf(out, "\tlw $t0, bp\n");
+    fprintf(out, "\taddi $sp, $sp, -4\n");
+    fprintf(out, "\tsw $t0, 0($sp)\n");
+    //bp_new == sp
+    fprintf(out, "\tsw $sp, bp\n");
+    stackoffset = 0;
+}
+
+void genCALL(Quad* quad) {
+    fprintf(out, "\t# call a function\n");
+    //push ra
+    fprintf(out, "\taddi $sp, $sp, -4\n");
+    fprintf(out, "\tsw $ra, 0($sp)\n");
+    
+    fprintf(out, "\tjal %s\n", quad->addr1.contents.name);
+    
+    //pop ra
+    fprintf(out, "\tlw $ra, 0($sp)\n");
+    fprintf(out, "\taddi $sp, $sp, 4\n");
+
+}
+
+void genRET(Quad*quad) {
+    fprintf(out, "\t# free stack\n");
+    //temp
+    fprintf(out, "\taddi $sp, $sp, %d\n", stackoffset);
+    //bp = bp_old / pop bp
+    fprintf(out, "\tlw $t0, 0($sp)\n");
+    fprintf(out, "\tsw $t0, bp\n");
+    fprintf(out, "\taddi $sp, $sp, 4\n");
+}
+
+bool getVar(char* name, VariableMap* map) {
+    for (int i=0; i<map->num; i++)
+        if (strcmp(name, map->var[i].name)==0)
+            return map->var[i].isVar;
+    return FALSE;
+}
+
+void genVAR(Quad* quad, VariableMap* map) {
+    fprintf(out, "\t# stack\n");
+    if (strcmp(quad->addr1.contents.name, "int")==0) {
+        stackoffset = stackoffset + 4;
+        changeVar(quad, map);
+        fprintf(out, "\taddi $sp, $sp, -4\n");
+        fprintf(out, "\tsw $sp, %s\n", quad->addr2.contents.name);
+    }
+    
+    if (strcmp(quad->addr1.contents.name, "float")==0) {
+        stackoffset = stackoffset + 4;
+        changeVar(quad, map);
+        fprintf(out, "\taddi $sp, $sp, -4\n");
+        fprintf(out, "\tsw $sp, %s\n", quad->addr2.contents.name);
+    }
+    
+    if (strcmp(quad->addr1.contents.name, "double")==0) {
+        stackoffset = stackoffset + 8;
+        changeVar(quad, map);
+        fprintf(out, "\taddi $sp, $sp, -8\n");
+        fprintf(out, "\tsw $sp, %s\n", quad->addr2.contents.name);
+    }
+    
 }
 
 //定义所有的变量 (已支持浮点数）
 void declareVariable(VariableMap* map) {
     int i;
+    char name[5];
     fprintf(out, ".data 0x10000000\n\n");
     fprintf(out, "\tendl:\t.asciiz\t\"\\n\"\n");
-    for (i=0; i<map->num; i++) {
-        if (map->var[i].type == INTEGER)
-            fprintf(out, "\t%s:\t.word\t%s\n", map->var[i].name, map->var[i].initval);
-        if (map->var[i].type == FLOAT)
-            fprintf(out, "\t%s:\t.float\t%s\n", map->var[i].name, map->var[i].floatval);
-        if (map->var[i].type == ARRAY)
-            fprintf(out, "\t%s:\t.double\t%s\n", map->var[i].name, map->var[i].doubleval);
+    fprintf(out, "\tbp:\t.word\t0\n");
+    for (i=0; i<20; i++) {
+        fprintf(out, "\tt%d:\t.word\t0\n", i);
+        sprintf(name, "t%d", i);
+        addVariable(map, name, INTEGER, "0");
     }
     fprintf(out, "\n");
 }
@@ -160,6 +270,14 @@ void declareVariable(VariableMap* map) {
 //将赋值的三地址码语句转化为mips（已支持浮点数）
 void genASN(Quad* quad, VariableMap* map) {
     fprintf(out, "\t# assign\n");
+    if (quad->addr2.kind == String && getVar(quad->addr2.contents.name, map)) {
+        quad->addr2.kind = Val;
+        addStar(quad->addr2.contents.name);
+    }
+    if (quad->addr1.kind == String && getVar(quad->addr1.contents.name, map)) {
+        quad->addr1.kind = Val;
+        addStar(quad->addr1.contents.name);
+    }
     if (quad->addr2.kind == String) {
         if (quad->addr1.kind == IntConst) fprintf(out, "\tli $t1, %d\n", quad->addr1.contents.intVal);
         if (quad->addr1.kind == String) fprintf(out, "\tlw $t1, %s\n", quad->addr1.contents.name);
@@ -224,12 +342,39 @@ void genASN(Quad* quad, VariableMap* map) {
             fprintf(out, "\ts.d $f0, 0($t0)\n");
         }
     }
+    if (quad->addr2.kind == Val && getVar(quad->addr2.contents.name, map)) {
+        quad->addr2.kind = String;
+        removeStar(quad->addr2.contents.name);
+    }
+    if (quad->addr1.kind == Val && getVar(quad->addr1.contents.name, map)) {
+        quad->addr1.kind = String;
+        removeStar(quad->addr1.contents.name);
+    }
 }
+
+
 
 //将加、减、乘法的三地址码语句转化为mips（已支持浮点数）
 void genCAL(Quad* quad, VariableMap* map) {
     fprintf(out, "\t# calculation\n");
+    if (strcmp(quad->addr1.contents.name, "sp")==0) {
+        if (quad->op == add) fprintf(out,"\taddi, $sp, $sp, %d\n", quad->addr2.contents.intVal);
+        if (quad->op == sub) fprintf(out,"\taddi, $sp, $sp, -%d\n", quad->addr2.contents.intVal);
+        return;
+    }
     type t1 = UNDEFINED, t2 = UNDEFINED, t3 = UNDEFINED;
+    if (quad->addr3.kind == String && getVar(quad->addr3.contents.name, map)) {
+        addStar(quad->addr3.contents.name);
+        quad->addr3.kind = Val;
+    }
+    if (quad->addr2.kind == String && getVar(quad->addr2.contents.name, map)) {
+        quad->addr2.kind = Val;
+        addStar(quad->addr2.contents.name);
+    }
+    if (quad->addr1.kind == String && getVar(quad->addr1.contents.name, map)) {
+        quad->addr1.kind = Val;
+        addStar(quad->addr1.contents.name);
+    }
     if (quad->addr3.kind == String) { //关于地址的计算
         if (quad->addr1.kind == IntConst) fprintf(out, "\tli $t1, %d\n", quad->addr1.contents.intVal);
         if (quad->addr1.kind == String) fprintf(out, "\tlw $t1, %s\n", quad->addr1.contents.name);
@@ -341,6 +486,18 @@ void genCAL(Quad* quad, VariableMap* map) {
             fprintf(out, "\ts.d $f4, 0($t3)\n");
         }
     }
+    if (quad->addr3.kind == Val && getVar(quad->addr3.contents.name, map)) {
+        removeStar(quad->addr3.contents.name);
+        quad->addr3.kind = String;
+    }
+    if (quad->addr2.kind == Val && getVar(quad->addr2.contents.name, map)) {
+        quad->addr2.kind = String;
+        removeStar(quad->addr2.contents.name);
+    }
+    if (quad->addr1.kind == Val && getVar(quad->addr1.contents.name, map)) {
+        quad->addr1.kind = String;
+        removeStar(quad->addr1.contents.name);
+    }
 }
 
 //生成读入的句子（已支持浮点数）
@@ -379,7 +536,9 @@ void genPRINT(Quad* quad, VariableMap* map) {
 //    保存现场
 //    fprintf(out, "\taddi $sp, $sp, -4\n");
 //    fprintf(out, "\tsw $ra, 0($sp)\n");
+
     fprintf(out, "\tlw $t0, %s\n", quad->addr1.contents.name);
+
     type t = getType(quad->addr1.contents.name, map);
     if (t == INTEGER) {
         fprintf(out, "\tlw $a0, 0($t0)\n");
@@ -420,7 +579,7 @@ void genFJUMP(Quad* quad) {
         fprintf(out, "\tlw $t1, %s\n", quad->addr1.contents.name);
         fprintf(out, "\tlw $t1, 0($t1)\n");
     }
-    fprintf(out, "\tbne $t1, $0, %s\n", quad->addr2.contents.name);
+    fprintf(out, "\tbeq $t1, $0, %s\n", quad->addr2.contents.name);
 }
 
 //直接goto
@@ -432,6 +591,18 @@ void genJUMP(Quad* quad) {
 //生成比较的语句,结果只能为INTEGER？
 void genCompare(Quad* quad, VariableMap* map) {
     fprintf(out, "\t# compare\n");
+    if (quad->addr3.kind == String && getVar(quad->addr3.contents.name, map)) {
+        addStar(quad->addr3.contents.name);
+        quad->addr3.kind = Val;
+    }
+    if (quad->addr2.kind == String && getVar(quad->addr2.contents.name, map)) {
+        quad->addr2.kind = Val;
+        addStar(quad->addr2.contents.name);
+    }
+    if (quad->addr1.kind == String && getVar(quad->addr1.contents.name, map)) {
+        quad->addr1.kind = Val;
+        addStar(quad->addr1.contents.name);
+    }
     type t1 = UNDEFINED, t2 = UNDEFINED, t=UNDEFINED;
     if (quad->addr1.kind==Val) t1 = getType(quad->addr1.contents.name+1, map); else
         switch (quad->addr1.kind) {
@@ -464,6 +635,11 @@ void genCompare(Quad* quad, VariableMap* map) {
         }
         if (quad->op == sm) fprintf(out, "\tslt $t3, $t1, $t2\n"); //如果c=a<b且a确实小于b则t0=1否则t0=0
         if (quad->op == gt) fprintf(out, "\tslt $t3, $t2, $t1\n");
+        if (quad->op == ne) {
+            fprintf(out, "\tslt $t4, $t1, $t2\n");
+            fprintf(out, "\tslt $t5, $t2, $t1\n");
+            fprintf(out, "\tor $t3, $t4, $t5\n");
+        }
         if (quad->op == eq) {
             fprintf(out, "\tslt $t4, $t1, $t2\n");
             fprintf(out, "\tslt $t5, $t2, $t1\n");
@@ -499,6 +675,7 @@ void genCompare(Quad* quad, VariableMap* map) {
         if (quad->op == sm) fprintf(out, "\tc.lt.s 0, $f0, $f2\n");
         if (quad->op == gt) fprintf(out, "\tc.lt.s 0, $f2, $f0\n");
         if (quad->op == eq) fprintf(out, "\tc.eq.s 0, $f0, $f2\n");
+        if (quad->op == ne) fprintf(out, "\tc.neq.s 0, $f2, $f0\n");
         fprintf(out, "\tli $t5, 1\n");
         fprintf(out, "\tli, $t3, 0\n");
         fprintf(out, "\tmovt $t3, $t5, 0\n");
@@ -541,6 +718,7 @@ void genCompare(Quad* quad, VariableMap* map) {
         if (quad->op == sm) fprintf(out, "\tc.lt.d 0, $f0, $f2\n");
         if (quad->op == gt) fprintf(out, "\tc.lt.d 0, $f2, $f0\n");
         if (quad->op == eq) fprintf(out, "\tc.eq.d 0, $f0, $f2\n");
+        if (quad->op == eq) fprintf(out, "\tc.neq.d 0, $f0, $f2\n");
         fprintf(out, "\tli $t5, 1\n");
         fprintf(out, "\tli, $t3, 0\n");
         fprintf(out, "\tmovt $t3, $t5, 0\n");
@@ -562,6 +740,18 @@ void genCompare(Quad* quad, VariableMap* map) {
         fprintf(out, "\tcvt.s.w $f0, $f0\n");
         fprintf(out, "\tcvt.d.s $f0, $f0\n");
         fprintf(out, "\ts.d $f0, 0($t2)\n");
+    }
+    if (quad->addr3.kind == Val && getVar(quad->addr3.contents.name, map)) {
+        removeStar(quad->addr3.contents.name);
+        quad->addr3.kind = String;
+    }
+    if (quad->addr2.kind == Val && getVar(quad->addr2.contents.name, map)) {
+        quad->addr2.kind = String;
+        removeStar(quad->addr2.contents.name);
+    }
+    if (quad->addr1.kind == Val && getVar(quad->addr1.contents.name, map)) {
+        quad->addr1.kind = String;
+        removeStar(quad->addr1.contents.name);
     }
 }
 
@@ -621,6 +811,15 @@ int main() {
             text.quad[text.num] = quad;
             text.num++;
         }
+        if (strcmp(elements[0], "var")==0) {
+            quad.op = var;
+            quad.addr1.kind = String;
+            quad.addr1.kind = String;
+            strcpy(quad.addr1.contents.name, elements[1]);
+            strcpy(quad.addr2.contents.name, elements[2]);
+            text.quad[text.num] = quad;
+            text.num++;
+        }
         //如果三地址码第一个元素是print
         if (strcmp(elements[0], "print")==0) {
             //***有可能输出常量***记得补充
@@ -677,13 +876,36 @@ int main() {
         }
         //如果是函数名（那最好有个main)
         if (strcmp(elements[0], "entry")==0) {
-            
+            quad.op = func;
+            strcpy(quad.addr1.contents.name, elements[1]);
+            text.quad[text.num] = quad;
+            text.num++;
         }
+        if (strcmp(elements[0], "ret")==0) {
+            quad.op = ret;
+            text.quad[text.num] = quad;
+            text.num++;
+        }
+        //如果是sp
+        if (strcmp(elements[0], "sp")==0) {
+            if (strcmp(elements[3], "+")==0) quad.op = add;
+            if (strcmp(elements[3], "-")==0) quad.op = sub;
+            strcpy(quad.addr1.contents.name, "sp");
+            quad.addr2.contents.intVal = atoi(elements[4]);
+            text.quad[text.num] = quad;
+            text.num++;
+            continue;
+        }
+//        //如果是bp
+//        if (strcmp(elements[0], "bp")==0) {
+//            quad.op = bp;
+//        }
         //判断 + 跳转语句 if a == b then goto label 关键是拆成两句话
         if (strcmp(elements[0], "if")==0) {
             //先比较
             //eq赋值为相同
             if (strcmp(elements[2], "==")==0) quad.op = eq;
+            if (strcmp(elements[2], "!=")==0) quad.op = ne;
             //gt赋值为大于
             if (strcmp(elements[2], ">")==0) quad.op = gt;
             //gt赋值为小于
@@ -723,6 +945,7 @@ int main() {
             if (quad.addr2.kind != IntConst && quad.addr2.kind != FloatConst) strcpy(quad.addr2.contents.name, elements[4]);
             //eq赋值为相同
             if (strcmp(elements[3], "==")==0) quad.op = eq;
+            if (strcmp(elements[3], "!=")==0) quad.op = ne;
             //gt赋值为大于
             if (strcmp(elements[3], ">")==0) quad.op = gt;
             //gt赋值为小于
@@ -752,19 +975,22 @@ int main() {
     //输出变量的MIPS
     declareVariable(&map);
     //处理开头
-    fprintf(out, ".text\n\n");
-    fprintf(out, "main:\n");
+    fprintf(out, ".text\n");
     //处理语句
     for (i=0; i<text.num; i++) {
         if (text.quad[i].op == asn) genASN(text.quad+i, &map);
         if (text.quad[i].op == pri || text.quad[i].op == priln) genPRINT(text.quad+i, &map);
         if (text.quad[i].op == rd) genREAD(text.quad+i, &map);
         if (text.quad[i].op == add || text.quad[i].op == mul || text.quad[i].op == sub || text.quad[i].op == dvd) genCAL(text.quad+i, &map);
-        if (text.quad[i].op == gt || text.quad[i].op == sm || text.quad[i].op == eq) genCompare(text.quad+i, &map);
+        if (text.quad[i].op == gt || text.quad[i].op == sm || text.quad[i].op == eq || text.quad[i].op == ne) genCompare(text.quad+i, &map);
         if (text.quad[i].op == lab) genLABEL(text.quad+i);
         if (text.quad[i].op == if_f) genFJUMP(text.quad+i);
         if (text.quad[i].op == dec) changeType(text.quad+i, &map);
+        if (text.quad[i].op == var) genVAR(text.quad+i, &map);
         if (text.quad[i].op == jump) genJUMP(text.quad+i);
+        if (text.quad[i].op == func) genFUNC(text.quad+i);
+        if (text.quad[i].op == ret) genRET(text.quad+i);
+        if (text.quad[i].op == call) genCALL(text.quad+i);
     }
     //退出主程序
     fprintf(out, "\tjr $ra\n");
